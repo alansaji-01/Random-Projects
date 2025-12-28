@@ -36,11 +36,11 @@ python particle_system.py
 
 📦 Dependencies
 
-pygame>=2.5.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-mediapipe>=0.10.0
-psutil>=5.9.0
-GPUtil>=1.4.0
+pygame>=2.5.0 <br>
+opencv-python>=4.8.0 <br>
+numpy>=1.24.0 <br>
+mediapipe>=0.10.0 <br>
+psutil>=5.9.0 <br>
+GPUtil>=1.4.0 <br>
 
 🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑❌
