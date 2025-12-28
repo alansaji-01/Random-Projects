@@ -1,0 +1,670 @@
+"""
+Advanced Atomic Particle System with Hand Gesture Control
+Install: pip install opencv-python mediapipe numpy pygame psutil GPUtil
+"""
+
+import cv2
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+except:
+    MEDIAPIPE_AVAILABLE = False
+
+import numpy as np
+import pygame
+import math
+import random
+import psutil
+try:
+    import GPUtil
+    GPU_AVAILABLE = True
+except:
+    GPU_AVAILABLE = False
+    print("⚠ GPUtil not available. Install with: pip install gputil")
+
+from dataclasses import dataclass
+from typing import List, Tuple
+import time
+
+@dataclass
+class Atom:
+    x: float
+    y: float
+    vx: float
+    vy: float
+    radius: float
+    mass: float
+    charge: int  # -1, 0, or +1
+    color: Tuple[int, int, int]
+    nucleus_color: Tuple[int, int, int]
+    electron_angle: float = 0.0
+    energy: float = 1.0
+    bonds: List[int] = None
+    
+    def __post_init__(self):
+        if self.bonds is None:
+            self.bonds = []
+
+class AtomicSystem:
+    def __init__(self, width: int, height: int, num_atoms: int = 500):
+        self.width = width
+        self.height = height
+        self.num_atoms = num_atoms
+        self.atoms: List[Atom] = []
+        self.bond_distance = 40
+        self.show_bonds = True
+        self.show_electron_orbits = True
+        self.show_trails = True
+        self.trails = []
+        self.max_trail_length = 30
+        
+        # Physics constants
+        self.coulomb_constant = 500
+        self.gravity_strength = 0.05
+        self.damping = 0.99
+        
+        self.init_atoms()
+    
+    def init_atoms(self):
+        """Initialize atoms with different types"""
+        self.atoms = []
+        atom_types = [
+            # Hydrogen (red)
+            {'color': (255, 100, 100), 'nucleus': (200, 0, 0), 'charge': 1, 'mass': 1},
+            # Carbon (gray)
+            {'color': (150, 150, 150), 'nucleus': (80, 80, 80), 'charge': 0, 'mass': 12},
+            # Oxygen (blue)
+            {'color': (100, 150, 255), 'nucleus': (0, 100, 200), 'charge': -1, 'mass': 16},
+            # Nitrogen (green)
+            {'color': (100, 255, 150), 'nucleus': (0, 180, 100), 'charge': 0, 'mass': 14},
+        ]
+        
+        for i in range(self.num_atoms):
+            atom_type = random.choice(atom_types)
+            self.atoms.append(Atom(
+                x=random.uniform(50, self.width - 50),
+                y=random.uniform(50, self.height - 50),
+                vx=random.uniform(-1, 1),
+                vy=random.uniform(-1, 1),
+                radius=atom_type['mass'] * 0.8 + 3,
+                mass=atom_type['mass'],
+                charge=atom_type['charge'],
+                color=atom_type['color'],
+                nucleus_color=atom_type['nucleus'],
+                electron_angle=random.uniform(0, 2 * math.pi)
+            ))
+    
+    def form_molecule(self, shape: str):
+        """Form molecular structures"""
+        cx, cy = self.width / 2, self.height / 2
+        
+        if shape == "benzene":
+            # Benzene ring (C6H6)
+            for i in range(6):
+                angle = (i / 6) * 2 * math.pi
+                radius = 80
+                if i < 6:
+                    self.atoms[i].x = cx + math.cos(angle) * radius
+                    self.atoms[i].y = cy + math.sin(angle) * radius
+                    self.atoms[i].color = (150, 150, 150)
+                    self.atoms[i].mass = 12
+        
+        elif shape == "dna":
+            # DNA double helix
+            for i, atom in enumerate(self.atoms[:min(100, len(self.atoms))]):
+                t = (i / 100) * 10 * math.pi
+                r = 60
+                if i % 2 == 0:
+                    atom.x = cx + math.cos(t) * r + (i / 100) * self.width * 0.6 - self.width * 0.3
+                    atom.y = cy + math.sin(t) * r
+                else:
+                    atom.x = cx + math.cos(t + math.pi) * r + (i / 100) * self.width * 0.6 - self.width * 0.3
+                    atom.y = cy + math.sin(t + math.pi) * r
+        
+        elif shape == "crystal":
+            # Crystal lattice
+            cols = int(math.sqrt(len(self.atoms)))
+            for i, atom in enumerate(self.atoms):
+                row = i // cols
+                col = i % cols
+                atom.x = (col / cols) * self.width * 0.8 + self.width * 0.1
+                atom.y = (row / cols) * self.height * 0.8 + self.height * 0.1
+        
+        elif shape == "water":
+            # Water molecules (H2O)
+            for i in range(0, min(len(self.atoms) - 2, 60), 3):
+                angle = (i / 60) * 2 * math.pi
+                radius = 150
+                base_x = cx + math.cos(angle) * radius
+                base_y = cy + math.sin(angle) * radius
+                
+                # Oxygen (center)
+                self.atoms[i].x = base_x
+                self.atoms[i].y = base_y
+                self.atoms[i].color = (100, 150, 255)
+                
+                # Hydrogen 1
+                self.atoms[i+1].x = base_x - 20
+                self.atoms[i+1].y = base_y - 15
+                self.atoms[i+1].color = (255, 100, 100)
+                
+                # Hydrogen 2
+                self.atoms[i+2].x = base_x + 20
+                self.atoms[i+2].y = base_y - 15
+                self.atoms[i+2].color = (255, 100, 100)
+        
+        elif shape == "solar":
+            # Solar system style
+            for i, atom in enumerate(self.atoms):
+                angle = (i / len(self.atoms)) * 2 * math.pi
+                radius = 50 + (i % 5) * 50
+                atom.x = cx + math.cos(angle) * radius
+                atom.y = cy + math.sin(angle) * radius
+                atom.vx = -math.sin(angle) * (200 / radius) * 0.5
+                atom.vy = math.cos(angle) * (200 / radius) * 0.5
+    
+    def update(self, hand_positions: List[Tuple[float, float]], dt: float):
+        """Update atomic physics"""
+        # Update bonds
+        for atom in self.atoms:
+            atom.bonds.clear()
+        
+        # Find nearby atoms for bonding
+        if self.show_bonds:
+            for i, atom1 in enumerate(self.atoms):
+                for j, atom2 in enumerate(self.atoms[i+1:], i+1):
+                    dx = atom2.x - atom1.x
+                    dy = atom2.y - atom1.y
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist < self.bond_distance:
+                        atom1.bonds.append(j)
+        
+        # Physics simulation
+        for i, atom in enumerate(self.atoms):
+            # Hand repulsion
+            for hx, hy in hand_positions:
+                dx = atom.x - hx
+                dy = atom.y - hy
+                dist = math.sqrt(dx*dx + dy*dy) + 0.1
+                
+                if dist < 250:
+                    force = (250 - dist) / 250 * 8
+                    atom.vx += (dx / dist) * force
+                    atom.vy += (dy / dist) * force
+                    atom.energy = min(2.0, atom.energy + 0.1)
+            
+            # Electromagnetic interactions
+            for j, other in enumerate(self.atoms):
+                if i == j:
+                    continue
+                
+                dx = other.x - atom.x
+                dy = other.y - atom.y
+                dist = math.sqrt(dx*dx + dy*dy) + 1
+                
+                if dist < 200:
+                    # Coulomb force (opposite charges attract)
+                    charge_force = (atom.charge * other.charge * self.coulomb_constant) / (dist * dist)
+                    
+                    if atom.charge * other.charge < 0:  # Opposite charges
+                        atom.vx += (dx / dist) * charge_force * 0.001
+                        atom.vy += (dy / dist) * charge_force * 0.001
+                    elif atom.charge * other.charge > 0:  # Same charges
+                        atom.vx -= (dx / dist) * charge_force * 0.001
+                        atom.vy -= (dy / dist) * charge_force * 0.001
+            
+            # Update electron orbit
+            atom.electron_angle += 0.1 * atom.energy
+            
+            # Apply velocity
+            atom.x += atom.vx * dt * 60
+            atom.y += atom.vy * dt * 60
+            
+            # Damping
+            atom.vx *= self.damping
+            atom.vy *= self.damping
+            
+            # Energy decay
+            atom.energy = max(0.5, atom.energy * 0.995)
+            
+            # Boundaries with bounce
+            if atom.x < atom.radius or atom.x > self.width - atom.radius:
+                atom.vx *= -0.7
+                atom.x = max(atom.radius, min(self.width - atom.radius, atom.x))
+            if atom.y < atom.radius or atom.y > self.height - atom.radius:
+                atom.vy *= -0.7
+                atom.y = max(atom.radius, min(self.height - atom.radius, atom.y))
+            
+            # Add trail
+            if self.show_trails and (abs(atom.vx) > 0.5 or abs(atom.vy) > 0.5):
+                self.trails.append({
+                    'x': atom.x,
+                    'y': atom.y,
+                    'color': atom.color,
+                    'life': 1.0
+                })
+        
+        # Update trails
+        self.trails = [t for t in self.trails if t['life'] > 0]
+        for trail in self.trails:
+            trail['life'] -= 0.05
+    
+    def draw(self, surface: pygame.Surface):
+        """Draw atoms with electron orbits"""
+        # Draw trails
+        for trail in self.trails:
+            alpha = int(trail['life'] * 150)
+            color = (*trail['color'], alpha)
+            try:
+                s = pygame.Surface((6, 6), pygame.SRCALPHA)
+                pygame.draw.circle(s, color, (3, 3), 3)
+                surface.blit(s, (int(trail['x']-3), int(trail['y']-3)))
+            except:
+                pass
+        
+        # Draw bonds
+        if self.show_bonds:
+            for i, atom in enumerate(self.atoms):
+                for j in atom.bonds:
+                    other = self.atoms[j]
+                    alpha = 100
+                    pygame.draw.line(surface, (*atom.color, alpha), 
+                                   (int(atom.x), int(atom.y)),
+                                   (int(other.x), int(other.y)), 2)
+        
+        # Draw atoms
+        for atom in self.atoms:
+            # Electron orbit
+            if self.show_electron_orbits:
+                orbit_radius = atom.radius * 2.5
+                pygame.draw.circle(surface, (100, 100, 150, 50), 
+                                 (int(atom.x), int(atom.y)), int(orbit_radius), 1)
+                
+                # Electrons
+                num_electrons = abs(atom.charge) + 1
+                for e in range(num_electrons):
+                    angle = atom.electron_angle + (e * 2 * math.pi / num_electrons)
+                    ex = atom.x + math.cos(angle) * orbit_radius
+                    ey = atom.y + math.sin(angle) * orbit_radius
+                    pygame.draw.circle(surface, (255, 255, 100), (int(ex), int(ey)), 2)
+            
+            # Energy glow
+            glow_size = int(atom.radius * atom.energy * 1.5)
+            for r in range(glow_size, 0, -2):
+                alpha = int(30 * atom.energy / (glow_size - r + 1))
+                glow_surf = pygame.Surface((r*2, r*2), pygame.SRCALPHA)
+                glow_color = tuple(min(255, c + 50) for c in atom.color) + (alpha,)
+                pygame.draw.circle(glow_surf, glow_color, (r, r), r)
+                surface.blit(glow_surf, (int(atom.x - r), int(atom.y - r)))
+            
+            # Nucleus
+            pygame.draw.circle(surface, atom.nucleus_color, 
+                             (int(atom.x), int(atom.y)), int(atom.radius))
+            
+            # Outer shell
+            pygame.draw.circle(surface, atom.color, 
+                             (int(atom.x), int(atom.y)), int(atom.radius), 2)
+            
+            # Charge indicator
+            if atom.charge > 0:
+                pygame.draw.line(surface, (255, 255, 255), 
+                               (int(atom.x-3), int(atom.y)), 
+                               (int(atom.x+3), int(atom.y)), 2)
+                pygame.draw.line(surface, (255, 255, 255), 
+                               (int(atom.x), int(atom.y-3)), 
+                               (int(atom.x), int(atom.y+3)), 2)
+            elif atom.charge < 0:
+                pygame.draw.line(surface, (255, 255, 255), 
+                               (int(atom.x-3), int(atom.y)), 
+                               (int(atom.x+3), int(atom.y)), 2)
+
+class PerformanceMonitor:
+    def __init__(self):
+        self.fps_history = []
+        self.cpu_history = []
+        self.mem_history = []
+        self.gpu_history = []
+        self.history_length = 60
+        
+    def update(self, fps: float):
+        self.fps_history.append(fps)
+        self.cpu_history.append(psutil.cpu_percent())
+        self.mem_history.append(psutil.virtual_memory().percent)
+        
+        if GPU_AVAILABLE:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    self.gpu_history.append(gpus[0].load * 100)
+                else:
+                    self.gpu_history.append(0)
+            except:
+                self.gpu_history.append(0)
+        else:
+            self.gpu_history.append(0)
+        
+        # Keep only recent history
+        if len(self.fps_history) > self.history_length:
+            self.fps_history.pop(0)
+            self.cpu_history.pop(0)
+            self.mem_history.pop(0)
+            self.gpu_history.pop(0)
+    
+    def draw(self, surface: pygame.Surface, font: pygame.font.Font, x: int, y: int):
+        """Draw performance graphs"""
+        graph_width = 200
+        graph_height = 60
+        
+        # Background
+        bg_surf = pygame.Surface((graph_width + 20, graph_height * 4 + 80), pygame.SRCALPHA)
+        bg_surf.fill((0, 0, 0, 200))
+        surface.blit(bg_surf, (x, y))
+        
+        # FPS Graph
+        self.draw_graph(surface, self.fps_history, x + 10, y + 10, 
+                       graph_width, graph_height, (0, 255, 0), "FPS", 120)
+        
+        # CPU Graph
+        self.draw_graph(surface, self.cpu_history, x + 10, y + graph_height + 30,
+                       graph_width, graph_height, (255, 100, 100), "CPU %", 100)
+        
+        # Memory Graph
+        self.draw_graph(surface, self.mem_history, x + 10, y + graph_height * 2 + 50,
+                       graph_width, graph_height, (100, 150, 255), "RAM %", 100)
+        
+        # GPU Graph
+        self.draw_graph(surface, self.gpu_history, x + 10, y + graph_height * 3 + 70,
+                       graph_width, graph_height, (255, 200, 0), "GPU %", 100)
+        
+        # Current values
+        if self.fps_history:
+            fps_text = font.render(f"{int(self.fps_history[-1])} FPS", True, (0, 255, 0))
+            cpu_text = font.render(f"{int(self.cpu_history[-1])}%", True, (255, 100, 100))
+            mem_text = font.render(f"{int(self.mem_history[-1])}%", True, (100, 150, 255))
+            gpu_text = font.render(f"{int(self.gpu_history[-1])}%", True, (255, 200, 0))
+            
+            surface.blit(fps_text, (x + graph_width - 60, y + 10))
+            surface.blit(cpu_text, (x + graph_width - 60, y + graph_height + 30))
+            surface.blit(mem_text, (x + graph_width - 60, y + graph_height * 2 + 50))
+            surface.blit(gpu_text, (x + graph_width - 60, y + graph_height * 3 + 70))
+    
+    def draw_graph(self, surface, data, x, y, w, h, color, label, max_val):
+        """Draw a single performance graph"""
+        font = pygame.font.Font(None, 18)
+        label_surf = font.render(label, True, color)
+        surface.blit(label_surf, (x, y - 15))
+        
+        if len(data) < 2:
+            return
+        
+        # Draw graph background
+        pygame.draw.rect(surface, (30, 30, 40), (x, y, w, h))
+        
+        # Draw graph lines
+        points = []
+        for i, val in enumerate(data):
+            px = x + (i / len(data)) * w
+            py = y + h - (val / max_val) * h
+            points.append((px, py))
+        
+        if len(points) > 1:
+            pygame.draw.lines(surface, color, False, points, 2)
+        
+        # Draw border
+        pygame.draw.rect(surface, color, (x, y, w, h), 1)
+
+class AtomicHandGestureSystem:
+    def __init__(self):
+        pygame.init()
+        self.width, self.height = 1400, 900
+        self.screen = pygame.display.set_mode((self.width, self.height))
+        pygame.display.set_caption("Atomic Particle System - Hand Gesture Control")
+        self.clock = pygame.time.Clock()
+        
+        # MediaPipe setup
+        self.hands = None
+        if MEDIAPIPE_AVAILABLE:
+            try:
+                self.mp_hands = mp.solutions.hands
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    min_detection_confidence=0.7,
+                    min_tracking_confidence=0.7
+                )
+                print("✓ MediaPipe initialized!")
+            except:
+                print("⚠ Using mouse control")
+        
+        # Camera
+        print("🎥 Initializing camera...")
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(1)
+        if not self.cap.isOpened():
+            print("❌ No camera - using mouse control (hold LEFT CLICK)")
+            self.cap = None
+        else:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            print("✅ Camera ready!")
+        
+        # Systems
+        self.atomic_system = AtomicSystem(self.width, self.height, 400)
+        self.perf_monitor = PerformanceMonitor()
+        
+        # UI
+        self.show_ui = True
+        self.show_camera = True
+        self.paused = False
+        self.font = pygame.font.Font(None, 24)
+        self.small_font = pygame.font.Font(None, 18)
+        
+        self.running = True
+    
+    def process_frame(self) -> List[Tuple[float, float]]:
+        """Detect hands or use mouse"""
+        if self.cap is None or not self.cap.isOpened():
+            return self.get_mouse_position()
+        
+        ret, frame = self.cap.read()
+        if not ret:
+            return self.get_mouse_position()
+        
+        frame = cv2.flip(frame, 1)
+        hand_positions = []
+        
+        if self.hands is not None:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(rgb_frame)
+            
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    landmark = hand_landmarks.landmark[8]
+                    x = int(landmark.x * self.width)
+                    y = int(landmark.y * self.height)
+                    hand_positions.append((x, y))
+        else:
+            hand_positions = self.detect_skin_color(frame)
+        
+        if self.show_camera and frame is not None:
+            try:
+                frame_surface = pygame.surfarray.make_surface(
+                    cv2.rotate(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), cv2.ROTATE_90_COUNTERCLOCKWISE)
+                )
+                frame_surface = pygame.transform.scale(frame_surface, (160, 120))
+                self.screen.blit(frame_surface, (self.width - 170, 10))
+            except:
+                pass
+        
+        return hand_positions if hand_positions else self.get_mouse_position()
+    
+    def detect_skin_color(self, frame) -> List[Tuple[float, float]]:
+        """Skin color detection fallback"""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        lower = np.array([0, 20, 70], dtype=np.uint8)
+        upper = np.array([20, 255, 255], dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower, upper)
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:2]
+        
+        positions = []
+        for contour in contours:
+            if cv2.contourArea(contour) > 5000:
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    x = int((cx / frame.shape[1]) * self.width)
+                    y = int((cy / frame.shape[0]) * self.height)
+                    positions.append((x, y))
+        return positions
+    
+    def get_mouse_position(self) -> List[Tuple[float, float]]:
+        """Mouse fallback control"""
+        if pygame.mouse.get_pressed()[0]:
+            return [pygame.mouse.get_pos()]
+        return []
+    
+    def draw_ui(self):
+        """Draw UI overlay"""
+        if not self.show_ui:
+            return
+        
+        ui_surf = pygame.Surface((350, 420), pygame.SRCALPHA)
+        ui_surf.fill((0, 0, 0, 180))
+        self.screen.blit(ui_surf, (10, 10))
+        
+        y = 20
+        title = self.font.render("⚛ Atomic System", True, (255, 255, 255))
+        self.screen.blit(title, (20, y))
+        y += 35
+        
+        info = [
+            f"Atoms: {len(self.atomic_system.atoms)}",
+            "",
+            "CONTROLS:",
+            "MOUSE: Hold LEFT to interact",
+            "1: Benzene ring",
+            "2: DNA helix",
+            "3: Crystal lattice",
+            "4: Water molecules",
+            "5: Solar system",
+            "B: Toggle bonds",
+            "E: Toggle electrons",
+            "T: Toggle trails",
+            "R: Reset atoms",
+            "+/-: Add/Remove atoms",
+            "U: Toggle UI",
+            "C: Toggle camera",
+            "SPACE: Pause",
+            "ESC: Quit"
+        ]
+        
+        for text in info:
+            surf = self.small_font.render(text, True, (200, 200, 200))
+            self.screen.blit(surf, (20, y))
+            y += 22
+        
+        # Hand indicators - FIXED: This section was causing the error
+        # It was trying to enumerate atoms but treat them as hand positions
+        # This should be handled separately in the main loop
+        
+        # Remove or comment out the problematic section:
+        # for i, (hx, hy) in enumerate(self.atomic_system.atoms[:1]):
+        #     pass
+    
+    def handle_events(self):
+        """Handle input"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                elif event.key == pygame.K_1:
+                    self.atomic_system.form_molecule("benzene")
+                elif event.key == pygame.K_2:
+                    self.atomic_system.form_molecule("dna")
+                elif event.key == pygame.K_3:
+                    self.atomic_system.form_molecule("crystal")
+                elif event.key == pygame.K_4:
+                    self.atomic_system.form_molecule("water")
+                elif event.key == pygame.K_5:
+                    self.atomic_system.form_molecule("solar")
+                elif event.key == pygame.K_r:
+                    self.atomic_system.init_atoms()
+                elif event.key == pygame.K_b:
+                    self.atomic_system.show_bonds = not self.atomic_system.show_bonds
+                elif event.key == pygame.K_e:
+                    self.atomic_system.show_electron_orbits = not self.atomic_system.show_electron_orbits
+                elif event.key == pygame.K_t:
+                    self.atomic_system.show_trails = not self.atomic_system.show_trails
+                elif event.key == pygame.K_u:
+                    self.show_ui = not self.show_ui
+                elif event.key == pygame.K_c:
+                    self.show_camera = not self.show_camera
+                elif event.key == pygame.K_SPACE:
+                    self.paused = not self.paused
+                elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                    self.atomic_system.num_atoms = min(1000, self.atomic_system.num_atoms + 50)
+                    self.atomic_system.init_atoms()
+                elif event.key == pygame.K_MINUS:
+                    self.atomic_system.num_atoms = max(100, self.atomic_system.num_atoms - 50)
+                    self.atomic_system.init_atoms()
+    
+    def run(self):
+        """Main loop"""
+        print("\n⚛ Atomic Particle System Started!")
+        print("Move your hand or hold LEFT MOUSE to interact with atoms!\n")
+        
+        while self.running:
+            dt = self.clock.tick(60) / 1000.0
+            fps = self.clock.get_fps()
+            
+            self.handle_events()
+            
+            # Clear with fade
+            fade = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            fade.fill((5, 5, 15, 30))
+            self.screen.blit(fade, (0, 0))
+            
+            # Process hands
+            hand_positions = self.process_frame()
+            
+            # Update physics
+            if not self.paused:
+                self.atomic_system.update(hand_positions, dt)
+            
+            # Draw everything
+            self.atomic_system.draw(self.screen)
+            
+            # Draw hand indicators
+            for hx, hy in hand_positions:
+                pygame.draw.circle(self.screen, (255, 100, 255), (int(hx), int(hy)), 25, 3)
+                pygame.draw.circle(self.screen, (255, 200, 255), (int(hx), int(hy)), 15, 2)
+            
+            # Draw UI
+            self.draw_ui()
+            
+            # Performance monitor
+            self.perf_monitor.update(fps if fps > 0 else 60)
+            self.perf_monitor.draw(self.screen, self.small_font, self.width - 230, 140)
+            
+            pygame.display.flip()
+        
+        self.cleanup()
+    
+    def cleanup(self):
+        """Cleanup"""
+        if self.cap:
+            self.cap.release()
+        pygame.quit()
+        print("\n✅ System closed!")
+
+if __name__ == "__main__":
+    app = AtomicHandGestureSystem()
+    app.run()
